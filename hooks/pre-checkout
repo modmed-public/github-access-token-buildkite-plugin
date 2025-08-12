@@ -1,0 +1,138 @@
+#!/bin/bash
+
+# Purpose:
+# grab the jwt token
+# get a normal token from it
+# use git config globally to always use this token, even instead of ssh
+
+# https://github.com/organizations/modmed/settings/apps/buildkite-auth-app
+
+make-jwt() {
+    client_id=$1 # Client ID as first argument
+    pem=$2 # private key as second argument
+
+    now=$(date +%s)
+    iat=$((${now} - 60)) # Issues 60 seconds in the past
+    exp=$((${now} + 600)) # Expires 10 minutes in the future
+
+    b64enc() { openssl base64 | tr -d '=' | tr '/+' '_-' | tr -d '\n'; }
+
+    header_json='{
+        "typ":"JWT",
+        "alg":"RS256"
+    }'
+    # Header encode
+    header=$( echo -n "${header_json}" | b64enc )
+
+    payload_json="{
+        \"iat\":${iat},
+        \"exp\":${exp},
+        \"iss\":\"${client_id}\"
+    }"
+    # Payload encode
+    payload=$( echo -n "${payload_json}" | b64enc )
+
+    # Signature
+    header_payload="${header}"."${payload}"
+    signature=$(
+        openssl dgst -sha256 -sign <(echo -n "${pem}") \
+        <(echo -n "${header_payload}") | b64enc
+    )
+
+    # Create JWT
+    JWT="${header_payload}"."${signature}"
+    #printf '%s\n' "JWT: $JWT"
+    echo $JWT
+}
+
+make-access-token() {
+    local installation_id=$1 # installation id as first argument
+    local generated_jwt=$2 # JWT as second argument
+    local github_api_url="https://api.github.com/app"
+
+    # call the urls with it
+    #echo "Calling [${github_api_url}], result:"
+    curl -s \
+    -H "Authorization: Bearer ${generated_jwt}" \
+    -H "Accept: application/vnd.github.machine-man-preview+json" \
+    "${github_api_url}" > /dev/null
+
+    github_api_url="https://api.github.com/app/installations"
+    #echo "Calling [${github_api_url}], result:"
+    curl -s \
+    -H "Authorization: Bearer ${generated_jwt}" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "${github_api_url}" > /dev/null
+
+    # get the token by POSTING to the url:
+    github_api_url="https://api.github.com/app/installations/$installation_id/access_tokens"
+    #echo "Calling [${github_api_url}], result:"
+    local tokens=$(curl -s -X POST \
+    -H "Authorization: Bearer ${generated_jwt}" \
+    -H "Accept: application/vnd.github.v3+json" \
+    "${github_api_url}" )
+
+    # extract the token, more information about expiry for example is present as well:
+    local token=$(echo "$tokens" | jq -r '.token')
+    echo $token
+}
+
+check_git_url_protocol() {
+  local git_url="$1"
+
+  if [[ "$git_url" =~ ^git@ ]]; then
+    echo "SSH"
+  elif [[ "$git_url" =~ ^https:// ]]; then
+    echo "HTTPS"
+  else
+    echo "Unknown"
+  fi
+}
+
+print_redacted() {
+  local name="$1"
+  local redacted="${name:0:4}****************"
+  echo "(redacted): $redacted"
+}
+
+echo "Will prepare access token(s) for $BUILDKITE_REPO"
+protocol=$(check_git_url_protocol $BUILDKITE_REPO)
+echo "Git URL protocol being used is $protocol"
+echo "Gathering Secrets..."
+
+client_id="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID)"
+private_key="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY)"
+installation_id="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID)"
+
+echo "client_id:"
+print_redacted  "${client_id}"
+echo "private_key:"
+print_redacted  "${private_key}"
+echo "installation_id:"
+print_redacted  "${installation_id}"
+
+if [[ -z "${client_id}" || -z "${private_key}" || -z "${installation_id}" ]]; then
+    buildkite-agent annotate 'Buildkite Secrets for GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID, GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY, or GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID empty or unset so skipping token setup.' --style 'error' --context 'ctx-error'
+    exit 1
+fi
+
+echo "Generating JWT:"
+generated_jwt=$(make-jwt "$client_id"  "$private_key")
+print_redacted "${generated_jwt}"
+
+echo "Generating Access Token:"
+token=$(make-access-token "${installation_id}" "$generated_jwt")
+print_redacted "${token}"
+
+echo "Modifying gitconfig for SSH"
+git config --global url."https://x-access-token:$token@github.com/".insteadOf "git@github.com:"
+
+if [ "$protocol" = "HTTPS" ]; then
+    echo "Creating another token for HTTPS specifically..."
+    https_token=$(make-access-token "${installation_id}" "$generated_jwt")
+    print_redacted "${https_token}"
+    echo "Modifying gitconfig for HTTPS"
+    git config --global url."https://x-access-token:$token@github.com/".insteadOf "https://github.com"
+fi
+
+exit 0
