@@ -1,0 +1,12 @@
+#!/bin/bash
+set -euo pipefail
+
+filepath="$(realpath ~/.gitconfig)"
+echo "Deleting ${filepath}"
+
+# clean up global configuration so we don't leave the token around
+#git config --global --remove-section url."https://x-access-token:$GITHUB_BUILDKITE_AUTH_APP_TOKEN@github.com/"
+
+rm ${filepath} || true
+
+exit 0

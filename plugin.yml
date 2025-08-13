@@ -1,0 +1,7 @@
+name: Modmed Github Authenticator for Buildkite
+description: A Buildkite Plugin for authenticating buildkite-agents with Github using a Github App and short-lived access tokens.
+author: https://github.com/modmed-public
+requirements: []
+configuration:
+  properties: []
+  additionalProperties: false
