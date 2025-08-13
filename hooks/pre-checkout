@@ -132,7 +132,7 @@ if [ "$protocol" = "HTTPS" ]; then
     https_token=$(make-access-token "${installation_id}" "$generated_jwt")
     print_redacted "${https_token}"
     echo "Modifying gitconfig for HTTPS"
-    git config --global url."https://x-access-token:$token@github.com/".insteadOf "https://github.com"
+    git config --global url."https://x-access-token:$https_token@github.com/".insteadOf "https://github.com"
 fi
 
 exit 0

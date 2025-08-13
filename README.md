@@ -8,9 +8,11 @@ We then use this plugin to run the **pre-checkout** hooks that will contact the 
 
 ### Requirements
 The plugin assumes the following Buildkite Secrets are defined in the Buildkite agent dashboard for the queues running the agent:
+
 - GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID
 - GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY
 - GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID
+
 If these are not available, the plugin will fail to run.
 
 ### Usage
