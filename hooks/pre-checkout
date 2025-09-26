@@ -100,9 +100,19 @@ protocol=$(check_git_url_protocol $BUILDKITE_REPO)
 echo "Git URL protocol being used is $protocol"
 echo "Gathering Secrets..."
 
+if ! command -v buildkite-agent >/dev/null 2>&1; then
+  echo "Error: buildkite-agent is not installed or not in PATH."
+  exit 1
+fi
+
 client_id="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID)"
 private_key="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY)"
 installation_id="$(buildkite-agent secret get GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID)"
+
+if [[ -z "${client_id}" || -z "${private_key}" || -z "${installation_id}" ]]; then
+    buildkite-agent annotate 'Buildkite Secrets for GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID, GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY, or GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID empty or unset so skipping token setup.' --style 'error' --context 'ctx-error'
+    exit 1
+fi
 
 echo "client_id:"
 print_redacted  "${client_id}"
@@ -110,11 +120,6 @@ echo "private_key:"
 print_redacted  "${private_key}"
 echo "installation_id:"
 print_redacted  "${installation_id}"
-
-if [[ -z "${client_id}" || -z "${private_key}" || -z "${installation_id}" ]]; then
-    buildkite-agent annotate 'Buildkite Secrets for GITHUB_BUILDKITE_AUTH_APP_CLIENT_ID, GITHUB_BUILDKITE_AUTH_APP_PRIVATE_KEY, or GITHUB_BUILDKITE_AUTH_APP_INSTALL_ID empty or unset so skipping token setup.' --style 'error' --context 'ctx-error'
-    exit 1
-fi
 
 echo "Generating JWT:"
 generated_jwt=$(make-jwt "$client_id"  "$private_key")
@@ -124,15 +129,23 @@ echo "Generating Access Token:"
 token=$(make-access-token "${installation_id}" "$generated_jwt")
 print_redacted "${token}"
 
-echo "Modifying gitconfig for SSH"
-git config --global url."https://x-access-token:$token@github.com/".insteadOf "git@github.com:"
-
-if [ "$protocol" = "HTTPS" ]; then
-    echo "Creating another token for HTTPS specifically..."
-    https_token=$(make-access-token "${installation_id}" "$generated_jwt")
-    print_redacted "${https_token}"
-    echo "Modifying gitconfig for HTTPS"
-    git config --global url."https://x-access-token:$https_token@github.com/".insteadOf "https://github.com"
+if [[ -z "${token}" || "${token}" == "null" ]]; then
+    buildkite-agent annotate 'Failed to get access token from GitHub so skipping token setup.' --style 'error' --context 'ctx-error'
+    exit 1
 fi
+
+buildkite-agent env set GITHUB_BUILDKITE_AUTH_APP_TOKEN="${token}"
+
+# It's important to replace both SSH and HTTPS urls with the token so that any submodules or SPMs that use either
+# protocol will use the token regardless of whether or not the target is protected by the token.  This is because when
+# running in CI environment we can't prompt for credentials which will invariable happen because the git credential helper
+# get's involved anytime a "bare" https url is used.
+
+git config --global credential.helper ""
+
+echo "Modifying gitconfig for SSH"
+git config --global --add url."https://x-access-token:$token@github.com/".insteadOf "git@github.com:"
+echo "Modifying gitconfig for HTTPS"
+git config --global --add url."https://x-access-token:$token@github.com/".insteadOf "https://github.com/"
 
 exit 0
